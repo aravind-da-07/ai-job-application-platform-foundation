@@ -1,0 +1,36 @@
+[project]
+name = "ai-job-application-platform"
+version = "0.1.0"
+description = "AI-powered platform that automates resume parsing, job discovery, AI matching, and supported job application submission."
+requires-python = ">=3.13"
+readme = "README.md"
+
+[tool.black]
+line-length = 100
+target-version = ["py313"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true

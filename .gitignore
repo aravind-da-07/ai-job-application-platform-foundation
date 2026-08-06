@@ -1,0 +1,43 @@
+# Environments
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+
+# Browser automation state
+browser_sessions/
+playwright-report/
+test-results/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Sample/generated data that should not be committed
+sample_data/generated/

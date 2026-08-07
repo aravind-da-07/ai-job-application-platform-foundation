@@ -18,6 +18,9 @@ from src.modules.resume_intelligence.schemas.resume_document import ResumeDocume
 from src.modules.resume_intelligence.schemas.resume_parse_result import (
     ResumeParseResult,
 )
+from src.modules.resume_intelligence.utils.text_normalizer import (
+    TextNormalizer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +61,6 @@ class PDFParser(ResumeParser):
         Parses the supplied PDF resume and returns the extracted content.
         """
 
-        # Validate before attempting to open the PDF.
         self.validate(document)
 
         logger.info("Parsing PDF '%s'.", document.file_name)
@@ -77,6 +79,18 @@ class PDFParser(ResumeParser):
                         extracted_pages.append(page_text)
 
                 extracted_text = "\n".join(extracted_pages).strip()
+
+                # Normalize extracted text before it enters the pipeline.
+                extracted_text = TextNormalizer.normalize(extracted_text)
+
+                # ---------------------------------------------------------
+                # TEMPORARY DEBUG
+                # ---------------------------------------------------------
+                print("\n" + "=" * 80)
+                print("NORMALIZED TEXT (FIRST 250 CHARACTERS)")
+                print("=" * 80)
+                print(repr(extracted_text[:250]))
+                print("=" * 80)
 
                 logger.info(
                     "Successfully extracted %s pages from '%s'.",
@@ -102,3 +116,6 @@ class PDFParser(ResumeParser):
             raise InvalidResumeDocumentError(
                 f"Unable to parse PDF: {document.file_name}"
             ) from exc
+
+
+__all__ = ["PDFParser"]

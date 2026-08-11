@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>LinkedIn Submission Test</title>
+</head>
+
+<body>
+
+<h1>Application Submission Test</h1>
+
+<form id="application-form">
+
+    <input
+        id="name"
+        type="text"
+        value="Aravind"
+    >
+
+    <button
+        type="button"
+        id="submit-success"
+        data-submit-button="true"
+    >
+        Submit Application
+    </button>
+
+    <div
+        id="confirmation"
+        data-submission-confirmation="true"
+        data-confirmation-id="test-confirmation-001"
+        style="display: none;"
+    >
+        Application submitted successfully.
+    </div>
+
+</form>
+
+<script>
+    document
+        .getElementById("submit-success")
+        .addEventListener("click", function () {
+            document
+                .getElementById("confirmation")
+                .style.display = "block";
+        });
+</script>
+
+</body>
+</html>

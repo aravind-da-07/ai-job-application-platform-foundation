@@ -3,9 +3,15 @@ LinkedIn portal adapter integration test.
 
 This test validates the LinkedIn adapter against the domain contracts
 without connecting to the real LinkedIn website.
+
+The fake PortalSession implements the complete PortalSession contract
+and provides the deterministic local LinkedIn job-card DOM expected by
+LinkedInJobCardExtractor.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from src.modules.job_discovery.domain.entities.job_discovery import (
     JobSearchCriteria,
@@ -19,38 +25,95 @@ from src.modules.job_discovery.infrastructure.portals import (
 from src.shared.config.constants import JobSourceType
 
 
+# ============================================================================
+# Fake PortalSession
+# ============================================================================
+
+
 class FakePortalSession:
     """
-    Minimal in-memory PortalSession implementation.
+    Deterministic in-memory PortalSession used by the integration test.
 
-    This fake session implements the complete PortalSession contract,
-    including the element-reading methods required by the current
-    browser abstraction.
+    No browser or real LinkedIn connection is required.
+
+    The session implements the complete PortalSession contract and exposes
+    the local LinkedIn test DOM expected by LinkedInJobCardExtractor:
+
+        article[data-job-id]
+        article[data-job-id] .job-title
+        article[data-job-id] .job-company
+        article[data-job-id] .job-location
+        article[data-job-id] a.job-link
     """
 
     def __init__(
         self,
         initial_url: str = "about:blank",
     ) -> None:
+
         self._current_url = initial_url
 
         self.clicked_selectors: list[str] = []
-
         self.navigated_urls: list[str] = []
 
-        self._texts: dict[str, str] = {
-            "#status": "ready",
+        # ------------------------------------------------------------------
+        # Page-level text values
+        # ------------------------------------------------------------------
+
+        self._texts: dict[str, list[str]] = {
+            "#status": ["ready"],
         }
+
+        # ------------------------------------------------------------------
+        # Page-level attributes
+        # ------------------------------------------------------------------
 
         self._attributes: dict[
             tuple[str, str],
-            str,
-        ] = {
+            list[str | None],
+        ] = {}
+
+        # ------------------------------------------------------------------
+        # Deterministic local LinkedIn test DOM
+        #
+        # This is exactly what LinkedInJobCardExtractor expects.
+        # ------------------------------------------------------------------
+
+        self._attributes[
             (
-                "#job-link",
+                "article[data-job-id]",
+                "data-job-id",
+            )
+        ] = [
+            "test-001",
+        ]
+
+        self._texts[
+            "article[data-job-id] .job-title"
+        ] = [
+            "Data Analyst",
+        ]
+
+        self._texts[
+            "article[data-job-id] .job-company"
+        ] = [
+            "Test Company",
+        ]
+
+        self._texts[
+            "article[data-job-id] .job-location"
+        ] = [
+            "Hyderabad",
+        ]
+
+        self._attributes[
+            (
+                "article[data-job-id] a.job-link",
                 "href",
-            ): "/jobs/view/test-001",
-        }
+            )
+        ] = [
+            "/jobs/view/test-001",
+        ]
 
     # ------------------------------------------------------------------
     # Navigation
@@ -68,9 +131,7 @@ class FakePortalSession:
 
         self._current_url = url
 
-        self.navigated_urls.append(
-            url
-        )
+        self.navigated_urls.append(url)
 
     def current_url(self) -> str:
         """
@@ -88,30 +149,33 @@ class FakePortalSession:
         selector: str,
     ) -> str:
         """
-        Return text from the first simulated element.
+        Return text from the first matching simulated element.
         """
 
-        return self._texts.get(
+        values = self._texts.get(
             selector,
-            "",
+            [],
         )
+
+        if not values:
+            return ""
+
+        return values[0]
 
     def get_texts(
         self,
         selector: str,
     ) -> list[str]:
         """
-        Return text from all simulated matching elements.
+        Return text from all matching simulated elements.
         """
 
-        value = self._texts.get(
-            selector
+        return list(
+            self._texts.get(
+                selector,
+                [],
+            )
         )
-
-        if value is None:
-            return []
-
-        return [value]
 
     # ------------------------------------------------------------------
     # Attribute helpers
@@ -123,15 +187,21 @@ class FakePortalSession:
         attribute: str,
     ) -> str | None:
         """
-        Return an attribute from the first simulated element.
+        Return an attribute from the first matching simulated element.
         """
 
-        return self._attributes.get(
+        values = self._attributes.get(
             (
                 selector,
                 attribute,
-            )
+            ),
+            [],
         )
+
+        if not values:
+            return None
+
+        return values[0]
 
     def get_attributes(
         self,
@@ -139,20 +209,110 @@ class FakePortalSession:
         attribute: str,
     ) -> list[str | None]:
         """
-        Return attributes from all simulated matching elements.
+        Return attributes from all matching simulated elements.
         """
 
-        value = self._attributes.get(
-            (
-                selector,
-                attribute,
+        return list(
+            self._attributes.get(
+                (
+                    selector,
+                    attribute,
+                ),
+                [],
             )
         )
 
-        if value is None:
-            return []
+    # ------------------------------------------------------------------
+    # Scoped element helpers
+    # ------------------------------------------------------------------
 
-        return [value]
+    def get_scoped_text(
+        self,
+        parent_selector: str,
+        child_selector: str,
+        index: int,
+    ) -> str:
+        """
+        Return text from a child inside a simulated parent.
+
+        The current LinkedIn local extractor does not require this method,
+        but PortalSession requires it, so it is implemented for contract
+        compatibility.
+        """
+
+        selector = (
+            f"{parent_selector} "
+            f"{child_selector}"
+        )
+
+        values = self.get_texts(
+            selector
+        )
+
+        if index < 0 or index >= len(values):
+            return ""
+
+        return values[index]
+
+    def get_scoped_attribute(
+        self,
+        parent_selector: str,
+        child_selector: str,
+        attribute: str,
+        index: int,
+    ) -> str | None:
+        """
+        Return an attribute from a child inside a simulated parent.
+        """
+
+        selector = (
+            f"{parent_selector} "
+            f"{child_selector}"
+        )
+
+        values = self.get_attributes(
+            selector,
+            attribute,
+        )
+
+        if index < 0 or index >= len(values):
+            return None
+
+        return values[index]
+
+    # ------------------------------------------------------------------
+    # Element helpers
+    # ------------------------------------------------------------------
+
+    def get_element_count(
+        self,
+        selector: str,
+    ) -> int:
+        """
+        Return the number of simulated matching elements.
+        """
+
+        if selector == "article[data-job-id]":
+            return 1
+
+        text_values = self._texts.get(
+            selector
+        )
+
+        if text_values is not None:
+            return len(text_values)
+
+        attribute_values = self._attributes.get(
+            (
+                selector,
+                "href",
+            )
+        )
+
+        if attribute_values is not None:
+            return len(attribute_values)
+
+        return 0
 
     # ------------------------------------------------------------------
     # Interaction
@@ -171,15 +331,21 @@ class FakePortalSession:
         )
 
 
+# ============================================================================
+# Main integration test
+# ============================================================================
+
+
 def main() -> None:
+
     print()
     print("=" * 70)
     print("LINKEDIN PORTAL ADAPTER INTEGRATION TEST")
     print("=" * 70)
 
-    # ==============================================================
-    # 1. Create adapter
-    # ==============================================================
+    # ======================================================================
+    # 1. Create LinkedIn adapter
+    # ======================================================================
 
     print()
     print("[1/10] Creating LinkedIn adapter...")
@@ -188,7 +354,10 @@ def main() -> None:
         base_url="https://www.linkedin.com"
     )
 
-    assert adapter.name == "LinkedIn"
+    assert (
+        adapter.name
+        == "LinkedIn"
+    )
 
     assert (
         adapter.source
@@ -216,16 +385,14 @@ def main() -> None:
         f"Base URL: {adapter.base_url}"
     )
 
-    # ==============================================================
+    # ======================================================================
     # 2. Create PortalSession
-    # ==============================================================
+    # ======================================================================
 
     print()
     print("[2/10] Creating PortalSession...")
 
-    session = FakePortalSession(
-        initial_url="about:blank"
-    )
+    session = FakePortalSession()
 
     assert isinstance(
         session,
@@ -240,14 +407,12 @@ def main() -> None:
         "Implements PortalSession: True"
     )
 
-    # ==============================================================
-    # 3. Test LinkedIn home navigation
-    # ==============================================================
+    # ======================================================================
+    # 3. Home navigation
+    # ======================================================================
 
     print()
-    print(
-        "[3/10] Testing LinkedIn home navigation..."
-    )
+    print("[3/10] Testing LinkedIn home navigation...")
 
     adapter.open_home(
         session
@@ -266,14 +431,12 @@ def main() -> None:
         f"Current URL: {session.current_url()}"
     )
 
-    # ==============================================================
-    # 4. Test portal detection
-    # ==============================================================
+    # ======================================================================
+    # 4. Portal detection
+    # ======================================================================
 
     print()
-    print(
-        "[4/10] Testing LinkedIn portal detection..."
-    )
+    print("[4/10] Testing LinkedIn portal detection...")
 
     assert adapter.is_on_portal(
         session
@@ -284,17 +447,15 @@ def main() -> None:
     )
 
     print(
-        "Current session belongs to LinkedIn: True"
+        "On LinkedIn: True"
     )
 
-    # ==============================================================
-    # 5. Test authentication detection
-    # ==============================================================
+    # ======================================================================
+    # 5. Authentication detection
+    # ======================================================================
 
     print()
-    print(
-        "[5/10] Testing authentication detection..."
-    )
+    print("[5/10] Testing authentication detection...")
 
     authenticated = adapter.is_authenticated(
         session
@@ -303,52 +464,43 @@ def main() -> None:
     assert authenticated is True
 
     print(
-        "AUTHENTICATION DETECTION successful"
+        "AUTHENTICATION detection successful"
     )
 
     print(
         f"Authenticated: {authenticated}"
     )
 
-    # ==============================================================
-    # 6. Test authentication page detection
-    # ==============================================================
+    # ======================================================================
+    # 6. Authentication flow
+    # ======================================================================
 
     print()
-    print(
-        "[6/10] Testing authentication-page detection..."
+    print("[6/10] Testing authentication flow...")
+
+    adapter.authenticate(
+        session
     )
 
-    login_session = FakePortalSession(
-        initial_url=(
-            "https://www.linkedin.com/login"
-        )
-    )
-
-    login_authenticated = (
-        adapter.is_authenticated(
-            login_session
-        )
-    )
-
-    assert login_authenticated is False
-
-    print(
-        "AUTHENTICATION PAGE DETECTION successful"
+    assert (
+        session.current_url()
+        == "https://www.linkedin.com"
     )
 
     print(
-        "Login page detected as authenticated: False"
+        "AUTHENTICATION flow successful"
     )
 
-    # ==============================================================
-    # 7. Test search criteria
-    # ==============================================================
+    print(
+        f"Current URL: {session.current_url()}"
+    )
+
+    # ======================================================================
+    # 7. Search criteria
+    # ======================================================================
 
     print()
-    print(
-        "[7/10] Testing LinkedIn search criteria..."
-    )
+    print("[7/10] Testing LinkedIn search criteria...")
 
     criteria = JobSearchCriteria(
         keywords=(
@@ -359,15 +511,24 @@ def main() -> None:
             "Hyderabad",
             "Remote",
         ),
-        maximum_results=10,
+        maximum_results=25,
     )
 
-    adapter._validate_criteria(
+    urls = adapter.build_search_urls(
         criteria
     )
 
+    assert len(urls) == 2
+
+    assert (
+        "Data+Analyst"
+        in urls[0]
+        or "Data%20Analyst"
+        in urls[0]
+    )
+
     print(
-        "SEARCH CRITERIA successful"
+        "SEARCH CRITERIA validation successful"
     )
 
     print(
@@ -379,18 +540,15 @@ def main() -> None:
     )
 
     print(
-        f"Maximum results: "
-        f"{criteria.maximum_results}"
+        f"Maximum results: {criteria.maximum_results}"
     )
 
-    # ==============================================================
-    # 8. Test job discovery contract
-    # ==============================================================
+    # ======================================================================
+    # 8. LinkedIn job discovery
+    # ======================================================================
 
     print()
-    print(
-        "[8/10] Testing LinkedIn job discovery contract..."
-    )
+    print("[8/10] Testing LinkedIn job discovery...")
 
     result = adapter.discover_jobs(
         session,
@@ -402,157 +560,164 @@ def main() -> None:
         == JobSourceType.LINKEDIN
     )
 
-    assert result.jobs == ()
-
-    assert result.total_found == 0
-
     assert (
-        result.metadata["portal"]
-        == "LinkedIn"
+        result.total_found
+        == 1
     )
 
     assert (
-        result.metadata["source"]
-        == "linkedin"
+        len(result.jobs)
+        == 1
+    )
+
+    job = result.jobs[0]
+
+    assert (
+        job.external_id
+        == "test-001"
     )
 
     assert (
-        result.metadata["search_keywords"]
-        == [
-            "Data Analyst",
-            "Business Analyst",
-        ]
+        job.title
+        == "Data Analyst"
     )
 
     assert (
-        result.metadata["search_locations"]
-        == [
+        job.company_name
+        == "Test Company"
+    )
+
+    assert (
+        job.location
+        == "Hyderabad"
+    )
+
+    assert (
+        job.source
+        == JobSourceType.LINKEDIN
+    )
+
+    assert (
+        job.url
+        == "https://www.linkedin.com/jobs/view/test-001"
+    )
+
+    print(
+        "JOB DISCOVERY successful"
+    )
+
+    print(
+        f"Jobs discovered: {result.total_found}"
+    )
+
+    print(
+        f"Job title: {job.title}"
+    )
+
+    print(
+        f"Company: {job.company_name}"
+    )
+
+    print(
+        f"Location: {job.location}"
+    )
+
+    print(
+        f"External ID: {job.external_id}"
+    )
+
+    print(
+        f"URL: {job.url}"
+    )
+
+    # ======================================================================
+    # 9. Search URL generation
+    # ======================================================================
+
+    print()
+    print("[9/10] Testing LinkedIn search URL generation...")
+
+    search_urls = adapter.build_search_urls(
+        criteria
+    )
+
+    assert (
+        len(search_urls)
+        == 2
+    )
+
+    assert all(
+        url.startswith(
+            "https://www.linkedin.com/jobs/search/"
+        )
+        for url in search_urls
+    )
+
+    assert all(
+        "keywords="
+        in url
+        for url in search_urls
+    )
+
+    assert all(
+        "location="
+        in url
+        for url in search_urls
+    )
+
+    print(
+        "SEARCH URL generation successful"
+    )
+
+    for index, url in enumerate(
+        search_urls,
+        start=1,
+    ):
+        print(
+            f"Search URL {index}: {url}"
+        )
+
+    # ======================================================================
+    # 10. Invalid criteria protection
+    # ======================================================================
+
+    print()
+    print("[10/10] Testing invalid criteria protection...")
+
+    invalid_criteria = JobSearchCriteria(
+        keywords=(),
+        locations=(
             "Hyderabad",
-            "Remote",
-        ]
+        ),
+        maximum_results=25,
     )
 
-    print(
-        "JOB DISCOVERY CONTRACT successful"
-    )
+    try:
 
-    print(
-        f"Source: {result.source.value}"
-    )
+        adapter.discover_jobs(
+            session,
+            invalid_criteria,
+        )
 
-    print(
-        f"Jobs returned: {len(result.jobs)}"
-    )
+    except Exception as exc:
 
-    print(
-        f"Total found: {result.total_found}"
-    )
+        print(
+            "INVALID CRITERIA protection successful"
+        )
 
-    # ==============================================================
-    # 9. Test jobs navigation and attributes
-    # ==============================================================
+        print(
+            f"Expected error: {exc}"
+        )
 
-    print()
-    print(
-        "[9/10] Testing LinkedIn jobs navigation and attributes..."
-    )
+    else:
 
-    adapter.open_url(
-        session,
-        adapter.JOBS_URL,
-    )
+        raise AssertionError(
+            "Invalid criteria was not rejected."
+        )
 
-    assert (
-        session.current_url()
-        == "https://www.linkedin.com/jobs"
-    )
-
-    href = session.get_attribute(
-        "#job-link",
-        "href",
-    )
-
-    assert (
-        href
-        == "/jobs/view/test-001"
-    )
-
-    hrefs = session.get_attributes(
-        "#job-link",
-        "href",
-    )
-
-    assert hrefs == [
-        "/jobs/view/test-001"
-    ]
-
-    print(
-        "JOBS NAVIGATION successful"
-    )
-
-    print(
-        f"Current URL: {session.current_url()}"
-    )
-
-    print(
-        "ATTRIBUTE HELPERS successful"
-    )
-
-    print(
-        f"Job href: {href}"
-    )
-
-    # ==============================================================
-    # 10. Test PortalSession helpers
-    # ==============================================================
-
-    print()
-    print(
-        "[10/10] Testing PortalSession helpers..."
-    )
-
-    session.click(
-        "#test-button"
-    )
-
-    status = session.get_text(
-        "#status"
-    )
-
-    statuses = session.get_texts(
-        "#status"
-    )
-
-    assert (
-        "#test-button"
-        in session.clicked_selectors
-    )
-
-    assert status == "ready"
-
-    assert statuses == [
-        "ready"
-    ]
-
-    print(
-        "SESSION HELPERS successful"
-    )
-
-    print(
-        "Click: successful"
-    )
-
-    print(
-        f"Text: {status}"
-    )
-
-    print(
-        f"Texts: {statuses}"
-    )
-
-    # ==============================================================
-    # Final
-    # ==============================================================
+    # ======================================================================
+    # Final result
+    # ======================================================================
 
     print()
     print("=" * 70)

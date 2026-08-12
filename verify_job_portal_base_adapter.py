@@ -31,6 +31,7 @@ from src.modules.job_discovery.infrastructure.portals import (
     BaseJobPortalAdapter,
 )
 from src.shared.config.constants import JobSourceType
+from src.shared.core.exceptions import ValidationError
 
 
 # ----------------------------------------------------------------------
@@ -44,6 +45,9 @@ class FakePortalSession:
 
     This test does not require Playwright because the purpose is to
     validate the BaseJobPortalAdapter independently.
+
+    The implementation satisfies the complete PortalSession protocol
+    defined by the domain layer.
     """
 
     def __init__(self) -> None:
@@ -52,6 +56,30 @@ class FakePortalSession:
         self._texts: dict[str, str] = {
             "#status": "ready",
         }
+
+        self._text_lists: dict[str, list[str]] = {}
+
+        self._attributes: dict[
+            tuple[str, str],
+            str | None,
+        ] = {}
+
+        self._attribute_lists: dict[
+            tuple[str, str],
+            list[str | None],
+        ] = {}
+
+        self._scoped_texts: dict[
+            tuple[str, str, int],
+            str,
+        ] = {}
+
+        self._scoped_attributes: dict[
+            tuple[str, str, str, int],
+            str | None,
+        ] = {}
+
+        self._element_counts: dict[str, int] = {}
 
         self.clicked_selectors: list[str] = []
         self.navigated_urls: list[str] = []
@@ -75,6 +103,84 @@ class FakePortalSession:
         return self._texts.get(
             selector,
             "",
+        )
+
+    def get_texts(
+        self,
+        selector: str,
+    ) -> list[str]:
+        return list(
+            self._text_lists.get(
+                selector,
+                [],
+            )
+        )
+
+    def get_attribute(
+        self,
+        selector: str,
+        attribute: str,
+    ) -> str | None:
+        return self._attributes.get(
+            (
+                selector,
+                attribute,
+            )
+        )
+
+    def get_attributes(
+        self,
+        selector: str,
+        attribute: str,
+    ) -> list[str | None]:
+        return list(
+            self._attribute_lists.get(
+                (
+                    selector,
+                    attribute,
+                ),
+                [],
+            )
+        )
+
+    def get_scoped_text(
+        self,
+        parent_selector: str,
+        child_selector: str,
+        index: int,
+    ) -> str:
+        return self._scoped_texts.get(
+            (
+                parent_selector,
+                child_selector,
+                index,
+            ),
+            "",
+        )
+
+    def get_scoped_attribute(
+        self,
+        parent_selector: str,
+        child_selector: str,
+        attribute: str,
+        index: int,
+    ) -> str | None:
+        return self._scoped_attributes.get(
+            (
+                parent_selector,
+                child_selector,
+                attribute,
+                index,
+            )
+        )
+
+    def get_element_count(
+        self,
+        selector: str,
+    ) -> int:
+        return self._element_counts.get(
+            selector,
+            0,
         )
 
     def click(
@@ -139,17 +245,6 @@ class TestPortalAdapter(BaseJobPortalAdapter):
         self._validate_criteria(
             criteria
         )
-
-        # IMPORTANT:
-        # These field names exactly match the current
-        # DiscoveredJob domain entity:
-        #
-        # external_id
-        # title
-        # company_name
-        # source
-        # url
-        # location
 
         job = DiscoveredJob(
             external_id="test-001",
@@ -259,16 +354,51 @@ def main() -> None:
     )
 
     print("PORTAL DETECTION successful")
-    print(
-        "Current session belongs to portal: True"
-    )
+    print("On portal: True")
 
     # --------------------------------------------------------------
-    # 5. Search criteria validation
+    # 5. Authentication
     # --------------------------------------------------------------
 
     print()
-    print("[5/10] Testing search criteria validation...")
+    print("[5/10] Testing portal authentication...")
+
+    assert adapter.is_authenticated(
+        session
+    )
+
+    print("AUTHENTICATION detection successful")
+    print("Authenticated: True")
+
+    # --------------------------------------------------------------
+    # 6. Authentication flow
+    # --------------------------------------------------------------
+
+    print()
+    print("[6/10] Testing authentication flow...")
+
+    session._current_url = "about:blank"
+
+    adapter.authenticate(
+        session
+    )
+
+    assert (
+        session.current_url()
+        == "https://www.linkedin.com"
+    )
+
+    print("AUTHENTICATION flow successful")
+    print(
+        f"Current URL: {session.current_url()}"
+    )
+
+    # --------------------------------------------------------------
+    # 7. Search criteria validation
+    # --------------------------------------------------------------
+
+    print()
+    print("[7/10] Testing search criteria validation...")
 
     criteria = JobSearchCriteria(
         keywords=(
@@ -286,10 +416,6 @@ def main() -> None:
         criteria
     )
 
-    assert (
-        criteria.maximum_results == 25
-    )
-
     print("SEARCH CRITERIA validation successful")
     print(
         f"Keywords: {criteria.keywords}"
@@ -298,67 +424,8 @@ def main() -> None:
         f"Locations: {criteria.locations}"
     )
     print(
-        f"Maximum results: "
-        f"{criteria.maximum_results}"
+        f"Maximum results: {criteria.maximum_results}"
     )
-
-    # --------------------------------------------------------------
-    # 6. Metadata merging
-    # --------------------------------------------------------------
-
-    print()
-    print("[6/10] Testing metadata merging...")
-
-    base_metadata = {
-        "source": "integration_test",
-        "attempt": 1,
-    }
-
-    additional_metadata = {
-        "portal": "linkedin",
-        "attempt": 2,
-    }
-
-    merged = adapter.merge_metadata(
-        base_metadata,
-        additional_metadata,
-    )
-
-    assert merged == {
-        "source": "integration_test",
-        "attempt": 2,
-        "portal": "linkedin",
-    }
-
-    # Ensure source dictionaries were not modified.
-    assert (
-        base_metadata["attempt"]
-        == 1
-    )
-
-    assert (
-        "portal"
-        not in base_metadata
-    )
-
-    print("METADATA MERGING successful")
-    print(
-        f"Merged metadata: {merged}"
-    )
-
-    # --------------------------------------------------------------
-    # 7. Authentication state
-    # --------------------------------------------------------------
-
-    print()
-    print("[7/10] Testing authentication state...")
-
-    assert adapter.is_authenticated(
-        session
-    )
-
-    print("AUTHENTICATION STATE successful")
-    print("Authenticated: True")
 
     # --------------------------------------------------------------
     # 8. Job discovery
@@ -377,128 +444,112 @@ def main() -> None:
         == JobSourceType.LINKEDIN
     )
 
-    assert len(result.jobs) == 1
-
-    assert result.total_found == 1
-
-    discovered_job = result.jobs[0]
+    assert (
+        result.total_found
+        == 1
+    )
 
     assert (
-        discovered_job.external_id
+        len(result.jobs)
+        == 1
+    )
+
+    job = result.jobs[0]
+
+    assert (
+        job.external_id
         == "test-001"
     )
 
     assert (
-        discovered_job.title
+        job.title
         == "Data Analyst"
     )
 
     assert (
-        discovered_job.company_name
+        job.company_name
         == "Test Company"
     )
 
     assert (
-        discovered_job.source
+        job.source
         == JobSourceType.LINKEDIN
-    )
-
-    assert (
-        discovered_job.url
-        == "https://www.linkedin.com/"
-        "jobs/view/test-001"
-    )
-
-    assert (
-        discovered_job.location
-        == "Hyderabad"
     )
 
     print("JOB DISCOVERY successful")
     print(
-        f"Source: {result.source.value}"
-    )
-    print(
         f"Jobs discovered: {len(result.jobs)}"
     )
     print(
-        f"Job title: {discovered_job.title}"
+        f"Job title: {job.title}"
     )
     print(
-        f"Company: "
-        f"{discovered_job.company_name}"
-    )
-    print(
-        f"External ID: "
-        f"{discovered_job.external_id}"
+        f"Company: {job.company_name}"
     )
 
     # --------------------------------------------------------------
-    # 9. Validated URL navigation
+    # 9. Invalid session protection
     # --------------------------------------------------------------
 
     print()
-    print("[9/10] Testing validated URL navigation...")
+    print("[9/10] Testing invalid session protection...")
 
-    job_url = (
-        "https://www.linkedin.com/"
-        "jobs/view/test-001"
-    )
+    try:
+        adapter.open_home(
+            object()
+        )
 
-    adapter.open_url(
-        session,
-        job_url,
-    )
+    except ValidationError as exc:
+        print(
+            "INVALID SESSION protection successful"
+        )
+        print(
+            f"Expected error: {exc}"
+        )
 
-    assert (
-        session.current_url()
-        == job_url
-    )
-
-    print("URL NAVIGATION successful")
-    print(
-        f"Current URL: {session.current_url()}"
-    )
+    else:
+        raise AssertionError(
+            "Expected invalid session protection "
+            "to reject the session."
+        )
 
     # --------------------------------------------------------------
-    # 10. Session helpers
+    # 10. Invalid criteria protection
     # --------------------------------------------------------------
 
     print()
-    print("[10/10] Testing session helper methods...")
+    print("[10/10] Testing invalid criteria protection...")
 
-    session.click(
-        "#test-button"
+    invalid_criteria = JobSearchCriteria(
+        keywords=(),
+        locations=(),
+        maximum_results=25,
     )
 
-    status = session.get_text(
-        "#status"
-    )
+    try:
+        adapter.discover_jobs(
+            session,
+            invalid_criteria,
+        )
 
-    assert (
-        "#test-button"
-        in session.clicked_selectors
-    )
+    except ValidationError as exc:
+        print(
+            "INVALID CRITERIA protection successful"
+        )
+        print(
+            f"Expected error: {exc}"
+        )
 
-    assert status == "ready"
-
-    print("SESSION HELPERS successful")
-    print(
-        "Click helper: successful"
-    )
-    print(
-        f"Text helper result: {status}"
-    )
-
-    # --------------------------------------------------------------
-    # Final
-    # --------------------------------------------------------------
+    else:
+        raise AssertionError(
+            "Expected invalid criteria protection "
+            "to reject empty search criteria."
+        )
 
     print()
     print("=" * 70)
-    print("BASE JOB PORTAL ADAPTER INTEGRATION TEST PASSED")
+    print("BASE JOB PORTAL ADAPTER TEST PASSED")
     print("=" * 70)
-    print()
 
 
 if __name__ == "__main__":

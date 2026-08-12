@@ -11,6 +11,8 @@ The asynchronous execute_async() method is the preferred path when
 using a real Playwright Page because Playwright objects must remain
 on their owning event loop.
 
+Execution history is recorded through the application history service.
+
 Authentication, CAPTCHA, manual review, and unsafe application flows
 are never bypassed.
 """
@@ -18,6 +20,7 @@ are never bypassed.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import Any
 
 from src.modules.job_discovery.domain.application_executor import (
@@ -25,24 +28,41 @@ from src.modules.job_discovery.domain.application_executor import (
     ApplicationExecutionResult,
     ApplicationExecutionStatus,
 )
+
 from src.modules.job_discovery.domain.application_executor.form import (
     ApplicationFormType,
 )
+
+from src.modules.job_discovery.domain.application_executor.history import (
+    ApplicationExecutionHistory,
+    ApplicationExecutionHistoryStatus,
+)
+
 from src.modules.job_discovery.infrastructure.application_executor.linkedin.form.form_detector import (
     LinkedInApplicationFormDetector,
 )
+
 from src.modules.job_discovery.infrastructure.application_executor.linkedin.form.mapping.field_mapper import (
     LinkedInApplicationFieldMapper,
 )
+
 from src.modules.job_discovery.infrastructure.application_executor.linkedin.workflow import (
     LinkedInBrowserExecutionWorkflow,
 )
+
 from src.modules.job_discovery.services.application_executor import (
     ApplicationExecutorPort,
 )
+
 from src.modules.job_discovery.services.application_executor.answers import (
     AnswerResolverService,
 )
+
+from src.modules.job_discovery.services.application_executor.history import (
+    ApplicationExecutionHistoryRepository,
+    ApplicationExecutionHistoryService,
+)
+
 from src.shared.config.constants import JobSourceType
 
 
@@ -55,6 +75,13 @@ class LinkedInApplicationExecutor(ApplicationExecutorPort):
 
     execute_async()
         Preferred browser/Playwright execution path.
+
+    Execution history is persisted through
+    ApplicationExecutionHistoryService.
+
+    History persistence failure is intentionally isolated from the
+    execution result so persistence cannot turn a successful browser
+    submission into a false failure.
     """
 
     source = JobSourceType.LINKEDIN
@@ -63,7 +90,15 @@ class LinkedInApplicationExecutor(ApplicationExecutorPort):
         self,
         browser_session: Any | None = None,
         answer_resolver: AnswerResolverService | None = None,
-        browser_workflow: LinkedInBrowserExecutionWorkflow | None = None,
+        browser_workflow: (
+            LinkedInBrowserExecutionWorkflow | None
+        ) = None,
+        history_repository: (
+            ApplicationExecutionHistoryRepository | None
+        ) = None,
+        history_service: (
+            ApplicationExecutionHistoryService | None
+        ) = None,
     ) -> None:
         self._browser_session = browser_session
 
@@ -79,11 +114,49 @@ class LinkedInApplicationExecutor(ApplicationExecutorPort):
             else LinkedInBrowserExecutionWorkflow()
         )
 
+        # ----------------------------------------------------------
+        # History service
+        # ----------------------------------------------------------
+        #
+        # Preferred dependency:
+        #
+        #     history_service
+        #
+        # Backward-compatible dependency:
+        #
+        #     history_repository
+        #
+        # Existing callers using history_repository continue to work.
+        #
+
+        if history_service is not None:
+            self._history_service = history_service
+
+        elif history_repository is not None:
+            self._history_service = (
+                ApplicationExecutionHistoryService(
+                    history_repository
+                )
+            )
+
+        else:
+            self._history_service = None
+
     @property
     def configured(self) -> bool:
-        """Return whether a browser session is configured."""
+        """
+        Return whether a browser session is configured.
+        """
 
         return self._browser_session is not None
+
+    @property
+    def history_configured(self) -> bool:
+        """
+        Return whether execution history persistence is configured.
+        """
+
+        return self._history_service is not None
 
     async def execute_async(
         self,
@@ -102,18 +175,36 @@ class LinkedInApplicationExecutor(ApplicationExecutorPort):
                 "LinkedIn executor received a non-LinkedIn job."
             )
 
+        started_at = datetime.now().astimezone()
+
+        # ----------------------------------------------------------
+        # Browser configuration safety gate
+        # ----------------------------------------------------------
+
         if self._browser_session is None:
-            return self._browser_not_configured_result(
+            result = self._browser_not_configured_result(
                 request
             )
 
+            self._record_execution_history(
+                request=request,
+                result=result,
+                started_at=started_at,
+            )
+
+            return result
+
+        # ----------------------------------------------------------
+        # Execute browser workflow
+        # ----------------------------------------------------------
+
         try:
-            return await self._execute_browser_workflow(
+            result = await self._execute_browser_workflow(
                 request
             )
 
         except Exception as exc:
-            return ApplicationExecutionResult(
+            result = ApplicationExecutionResult(
                 application_id=request.application_id,
                 external_job_id=request.external_job_id,
                 source=request.source,
@@ -130,6 +221,18 @@ class LinkedInApplicationExecutor(ApplicationExecutorPort):
                     "exception": str(exc),
                 },
             )
+
+        # ----------------------------------------------------------
+        # Record normalized execution history
+        # ----------------------------------------------------------
+
+        self._record_execution_history(
+            request=request,
+            result=result,
+            started_at=started_at,
+        )
+
+        return result
 
     def execute(
         self,
@@ -152,12 +255,21 @@ class LinkedInApplicationExecutor(ApplicationExecutorPort):
             )
 
         if self._browser_session is None:
-            return self._browser_not_configured_result(
+            result = self._browser_not_configured_result(
                 request
             )
 
+            self._record_execution_history(
+                request=request,
+                result=result,
+                started_at=datetime.now().astimezone(),
+            )
+
+            return result
+
         try:
             asyncio.get_running_loop()
+
         except RuntimeError:
             return asyncio.run(
                 self.execute_async(request)
@@ -192,11 +304,12 @@ class LinkedInApplicationExecutor(ApplicationExecutorPort):
 
         # ----------------------------------------------------------
         # 2. Safety gates
-        #
-        # These flows must never receive automatic answers.
         # ----------------------------------------------------------
 
-        if form_type == ApplicationFormType.AUTHENTICATION_REQUIRED:
+        if (
+            form_type
+            == ApplicationFormType.AUTHENTICATION_REQUIRED
+        ):
             return self._manual_review_result(
                 request=request,
                 reason=(
@@ -209,7 +322,10 @@ class LinkedInApplicationExecutor(ApplicationExecutorPort):
                 },
             )
 
-        if form_type == ApplicationFormType.CAPTCHA_DETECTED:
+        if (
+            form_type
+            == ApplicationFormType.CAPTCHA_DETECTED
+        ):
             return self._manual_review_result(
                 request=request,
                 reason=(
@@ -222,7 +338,10 @@ class LinkedInApplicationExecutor(ApplicationExecutorPort):
                 },
             )
 
-        if form_type == ApplicationFormType.EXTERNAL_APPLICATION:
+        if (
+            form_type
+            == ApplicationFormType.EXTERNAL_APPLICATION
+        ):
             return self._manual_review_result(
                 request=request,
                 reason=(
@@ -281,7 +400,7 @@ class LinkedInApplicationExecutor(ApplicationExecutorPort):
         )
 
         # ----------------------------------------------------------
-        # 6. Convert workflow result to executor result
+        # 6. Convert workflow result
         # ----------------------------------------------------------
 
         return self._to_execution_result(
@@ -406,11 +525,148 @@ class LinkedInApplicationExecutor(ApplicationExecutorPort):
             },
         )
 
+    def _record_execution_history(
+        self,
+        *,
+        request: ApplicationExecutionRequest,
+        result: ApplicationExecutionResult,
+        started_at: datetime,
+    ) -> None:
+        """
+        Persist a normalized execution history record.
+
+        History persistence is deliberately isolated from the
+        execution result.
+
+        A history-service or repository failure must never change
+        the browser execution outcome.
+        """
+
+        if self._history_service is None:
+            return
+
+        try:
+            history_status = (
+                self._history_status_from_execution_status(
+                    result.status
+                )
+            )
+
+            completed_at = (
+                result.completed_at
+                or datetime.now().astimezone()
+            )
+
+            form_type = result.metadata.get(
+                "form_type"
+            )
+
+            confirmation_id = result.metadata.get(
+                "confirmation_id"
+            )
+
+            history = ApplicationExecutionHistory(
+                application_id=request.application_id,
+                external_job_id=request.external_job_id,
+                source=request.source,
+                status=history_status,
+                started_at=started_at,
+                completed_at=completed_at,
+                form_type=(
+                    str(form_type)
+                    if form_type is not None
+                    else None
+                ),
+                fields_detected=result.fields_detected,
+                fields_filled=result.fields_filled,
+                confirmation_id=(
+                    str(confirmation_id)
+                    if confirmation_id is not None
+                    else None
+                ),
+                manual_intervention_required=(
+                    result.requires_manual_intervention
+                ),
+                reason=result.reason,
+                error_code=result.error_code,
+                metadata={
+                    "portal": "linkedin",
+                    "submitted": result.submitted,
+                    "execution_status": (
+                        result.status.value
+                    ),
+                },
+            )
+
+            self._history_service.record(
+                history
+            )
+
+        except Exception:
+            # ------------------------------------------------------
+            # CRITICAL SAFETY BOUNDARY
+            # ------------------------------------------------------
+            #
+            # History is observability/persistence.
+            #
+            # It must NEVER alter the actual application result.
+            #
+            # If persistence fails:
+            #
+            #     submission remains submitted
+            #     manual review remains manual review
+            #     failure remains failure
+            #
+            # A future observability layer can log this exception.
+            #
+
+            return
+
+    @staticmethod
+    def _history_status_from_execution_status(
+        status: ApplicationExecutionStatus,
+    ) -> ApplicationExecutionHistoryStatus:
+        """
+        Map executor status to persistent history status.
+        """
+
+        if (
+            status
+            == ApplicationExecutionStatus.SUBMITTED
+        ):
+            return (
+                ApplicationExecutionHistoryStatus.SUBMITTED
+            )
+
+        if (
+            status
+            == ApplicationExecutionStatus.MANUAL_REVIEW_REQUIRED
+        ):
+            return (
+                ApplicationExecutionHistoryStatus
+                .MANUAL_REVIEW_REQUIRED
+            )
+
+        if status in {
+            ApplicationExecutionStatus.AUTHENTICATION_REQUIRED,
+            ApplicationExecutionStatus.CAPTCHA_DETECTED,
+        }:
+            return (
+                ApplicationExecutionHistoryStatus
+                .MANUAL_REVIEW_REQUIRED
+            )
+
+        return (
+            ApplicationExecutionHistoryStatus.FAILED
+        )
+
     @staticmethod
     def _browser_not_configured_result(
         request: ApplicationExecutionRequest,
     ) -> ApplicationExecutionResult:
-        """Return a safe result when no browser session exists."""
+        """
+        Return a safe result when no browser session exists.
+        """
 
         return ApplicationExecutionResult(
             application_id=request.application_id,
@@ -439,7 +695,9 @@ class LinkedInApplicationExecutor(ApplicationExecutorPort):
         error_code: str,
         metadata: dict[str, Any] | None = None,
     ) -> ApplicationExecutionResult:
-        """Create a safe manual-review result."""
+        """
+        Create a safe manual-review result.
+        """
 
         result_metadata = {
             "portal": "linkedin",
@@ -466,7 +724,9 @@ class LinkedInApplicationExecutor(ApplicationExecutorPort):
     def _validate_request(
         request: ApplicationExecutionRequest,
     ) -> None:
-        """Validate that the request contains usable LinkedIn data."""
+        """
+        Validate that the request contains usable LinkedIn data.
+        """
 
         if not request.application_id.strip():
             raise ValueError(

@@ -23,12 +23,17 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    text,
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from src.shared.database.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
+from src.shared.database.base import (
+    Base,
+    TimestampMixin,
+    UUIDPrimaryKeyMixin,
+)
 
 
 class ResumeModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -43,7 +48,10 @@ class ResumeModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey(
+            "users.id",
+            ondelete="CASCADE",
+        ),
         nullable=False,
         index=True,
     )
@@ -68,7 +76,11 @@ class ResumeModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
 
 
-class ResumeVersionModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+class ResumeVersionModel(
+    UUIDPrimaryKeyMixin,
+    TimestampMixin,
+    Base,
+):
     """
     Database representation of a specific resume file version.
 
@@ -81,7 +93,10 @@ class ResumeVersionModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     resume_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("resumes.id", ondelete="CASCADE"),
+        ForeignKey(
+            "resumes.id",
+            ondelete="CASCADE",
+        ),
         nullable=False,
         index=True,
     )
@@ -134,28 +149,40 @@ class ResumeVersionModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
 
     __table_args__ = (
+        # --------------------------------------------------------------
         # Prevent duplicate version numbers for the same resume.
+        #
+        # Same resume + same version number = NOT allowed.
+        # Same resume + different version number = allowed.
+        # --------------------------------------------------------------
         UniqueConstraint(
             "resume_id",
             "version_number",
             name="uq_resume_versions_resume_version",
         ),
 
-        # Prevent storing the exact same resume file twice
+        # --------------------------------------------------------------
+        # Prevent the exact same resume file from being stored twice
         # for the same logical resume.
+        # --------------------------------------------------------------
         UniqueConstraint(
             "resume_id",
             "file_hash",
             name="uq_resume_versions_resume_hash",
         ),
 
-        # PostgreSQL partial unique index:
-        # only one version can have is_active = TRUE
-        # for a particular resume.
+        # --------------------------------------------------------------
+        # Only one active version per resume.
+        #
+        # IMPORTANT:
+        # sqlite_where and postgresql_where must receive SQLAlchemy
+        # SQL expressions, not plain Python strings.
+        # --------------------------------------------------------------
         Index(
             "uq_resume_versions_one_active",
             "resume_id",
             unique=True,
-            postgresql_where="is_active = true",
+            sqlite_where=text("is_active = 1"),
+            postgresql_where=text("is_active = true"),
         ),
     )

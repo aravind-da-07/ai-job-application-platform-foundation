@@ -11,8 +11,12 @@ from src.modules.resume_intelligence.domain.exceptions.parsing import (
     UnsupportedFileTypeError,
 )
 from src.modules.resume_intelligence.parsers.base_parser import ResumeParser
+from src.modules.resume_intelligence.parsers.docx_parser import DOCXParser
 from src.modules.resume_intelligence.parsers.pdf_parser import PDFParser
-from src.modules.resume_intelligence.schemas.resume_document import ResumeDocument
+from src.modules.resume_intelligence.parsers.txt_parser import TXTParser
+from src.modules.resume_intelligence.schemas.resume_document import (
+    ResumeDocument,
+)
 
 
 class ParserFactory:
@@ -22,12 +26,17 @@ class ParserFactory:
 
     _parsers: tuple[type[ResumeParser], ...] = (
         PDFParser,
+        DOCXParser,
+        TXTParser,
     )
 
     @classmethod
-    def create(cls, document: ResumeDocument) -> ResumeParser:
+    def create(
+        cls,
+        document: ResumeDocument,
+    ) -> ResumeParser:
         """
-        Returns the appropriate parser for the supplied document.
+        Return the appropriate parser for the supplied document.
         """
 
         for parser_class in cls._parsers:

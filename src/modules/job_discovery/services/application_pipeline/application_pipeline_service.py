@@ -10,16 +10,20 @@ Connects:
     ApplicationEligibilityService
         ↓
     ApplicationQueueService
+        ↓
+    ApplicationRepository
 
-This layer does not perform browser automation or submit applications.
-It only decides which discovered jobs are safe and eligible to enter
-the application queue.
+This layer decides which discovered jobs are eligible for application
+and persists accepted applications.
+
+This service does not perform browser automation or submit applications.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import UUID
 
 from src.modules.job_discovery.domain.application import (
     ApplicationEligibilityDecision,
@@ -33,6 +37,9 @@ from src.modules.job_discovery.domain.entities.job_discovery import (
 from src.modules.job_discovery.domain.matching import (
     CandidateJobProfile,
     JobMatchResult,
+)
+from src.modules.job_discovery.domain.repositories.application_repository import (
+    ApplicationRepository,
 )
 from src.modules.job_discovery.services.application import (
     ApplicationEligibilityService,
@@ -55,11 +62,16 @@ class ApplicationPipelineResult:
     """
 
     external_job_id: str
+
     match_result: JobMatchResult
+
     eligibility_decision: ApplicationEligibilityDecision
 
     queued: bool = False
+
     queue_item: ApplicationQueueItem | None = None
+
+    persisted: bool = False
 
     reason: str = ""
 
@@ -77,9 +89,15 @@ class ApplicationPipelineBatchResult:
     results: tuple[ApplicationPipelineResult, ...]
 
     jobs_evaluated: int
+
     jobs_matched: int
+
     jobs_queued: int
+
+    jobs_persisted: int
+
     jobs_skipped: int
+
     jobs_manual_review: int
 
     metadata: dict[str, Any] = field(
@@ -89,7 +107,17 @@ class ApplicationPipelineBatchResult:
 
 class ApplicationPipelineService:
     """
-    Coordinates matching, eligibility, and queueing.
+    Coordinates matching, eligibility, queueing, and persistence.
+
+    Flow:
+
+        1. Match the discovered job.
+        2. Evaluate application eligibility.
+        3. Queue eligible jobs.
+        4. Persist the accepted application.
+
+    User/resume context is supplied by the caller because discovery
+    itself is intentionally user-independent.
     """
 
     def __init__(
@@ -100,7 +128,9 @@ class ApplicationPipelineService:
             ApplicationEligibilityService | None
         ) = None,
         queue_service: ApplicationQueueService | None = None,
+        application_repository: ApplicationRepository | None = None,
     ) -> None:
+
         self._matching_service = (
             matching_service
             or JobMatchingService()
@@ -116,25 +146,59 @@ class ApplicationPipelineService:
             or ApplicationQueueService()
         )
 
+        self._application_repository = (
+            application_repository
+        )
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
     @property
-    def matching_service(self) -> JobMatchingService:
+    def matching_service(
+        self,
+    ) -> JobMatchingService:
+        """Return the configured matching service."""
+
         return self._matching_service
 
     @property
     def eligibility_service(
         self,
     ) -> ApplicationEligibilityService:
+        """Return the configured eligibility service."""
+
         return self._eligibility_service
 
     @property
-    def queue_service(self) -> ApplicationQueueService:
+    def queue_service(
+        self,
+    ) -> ApplicationQueueService:
+        """Return the configured queue service."""
+
         return self._queue_service
+
+    @property
+    def application_repository(
+        self,
+    ) -> ApplicationRepository | None:
+        """Return the configured application repository."""
+
+        return self._application_repository
+
+    # ------------------------------------------------------------------
+    # Single-job processing
+    # ------------------------------------------------------------------
 
     def process_job(
         self,
         job: DiscoveredJob,
         profile: CandidateJobProfile,
         *,
+        user_id: UUID | None = None,
+        job_id: UUID | None = None,
+        resume_id: UUID | None = None,
+        resume_version_id: UUID | None = None,
         already_applied: bool = False,
         job_active: bool = True,
         authentication_required: bool = False,
@@ -143,7 +207,13 @@ class ApplicationPipelineService:
         metadata: dict[str, Any] | None = None,
     ) -> ApplicationPipelineResult:
         """
-        Process one discovered job through all application gates.
+        Process one discovered job.
+
+        An eligible job is first placed into the application queue.
+
+        When an application repository and the required user/job
+        identifiers are available, the accepted application is also
+        persisted.
         """
 
         if job is None:
@@ -199,9 +269,14 @@ class ApplicationPipelineService:
                 ),
                 queued=False,
                 queue_item=None,
+                persisted=False,
                 reason=eligibility.reason,
                 metadata=dict(metadata or {}),
             )
+
+        # --------------------------------------------------------------
+        # Stage 4: Queue
+        # --------------------------------------------------------------
 
         queue_decision = self._queue_service.enqueue(
             job,
@@ -219,12 +294,80 @@ class ApplicationPipelineService:
                 ),
                 queued=False,
                 queue_item=None,
+                persisted=False,
                 reason=queue_decision.reason,
                 metadata={
                     **dict(metadata or {}),
                     **queue_decision.metadata,
                 },
             )
+
+        queue_item = queue_decision.item
+
+        if queue_item is None:
+            return ApplicationPipelineResult(
+                external_job_id=job.external_id,
+                match_result=match_result,
+                eligibility_decision=(
+                    eligibility.decision
+                ),
+                queued=True,
+                queue_item=None,
+                persisted=False,
+                reason=(
+                    "Application was accepted into the queue "
+                    "but no queue item was returned."
+                ),
+                metadata={
+                    **dict(metadata or {}),
+                    **queue_decision.metadata,
+                },
+            )
+
+        # --------------------------------------------------------------
+        # Stage 5: Persistent application record
+        # --------------------------------------------------------------
+
+        persisted = False
+
+        persistence_metadata: dict[str, Any] = {}
+
+        if self._application_repository is not None:
+
+            if user_id is None:
+                raise ValueError(
+                    "user_id is required when an "
+                    "application repository is configured."
+                )
+
+            if job_id is None:
+                raise ValueError(
+                    "job_id is required when an "
+                    "application repository is configured."
+                )
+
+            persisted_item = (
+                self._application_repository.create(
+                    queue_item,
+                    user_id=user_id,
+                    job_id=job_id,
+                    resume_id=resume_id,
+                    resume_version_id=resume_version_id,
+                )
+            )
+
+            persisted = True
+
+            persistence_metadata = {
+                "application_persisted": True,
+                "application_id": (
+                    persisted_item.application_id
+                ),
+            }
+
+        # --------------------------------------------------------------
+        # Final result
+        # --------------------------------------------------------------
 
         return ApplicationPipelineResult(
             external_job_id=job.external_id,
@@ -233,13 +376,24 @@ class ApplicationPipelineService:
                 eligibility.decision
             ),
             queued=True,
-            queue_item=queue_decision.item,
-            reason=queue_decision.reason,
+            queue_item=queue_item,
+            persisted=persisted,
+            reason=(
+                "Application successfully queued."
+                if not persisted
+                else
+                "Application successfully queued and persisted."
+            ),
             metadata={
                 **dict(metadata or {}),
                 **queue_decision.metadata,
+                **persistence_metadata,
             },
         )
+
+    # ------------------------------------------------------------------
+    # Batch processing
+    # ------------------------------------------------------------------
 
     def process_jobs(
         self,
@@ -247,6 +401,10 @@ class ApplicationPipelineService:
         | tuple[DiscoveredJob, ...],
         profile: CandidateJobProfile,
         *,
+        user_id: UUID | None = None,
+        job_ids: dict[str, UUID] | None = None,
+        resume_id: UUID | None = None,
+        resume_version_id: UUID | None = None,
         already_applied_ids: set[str] | None = None,
         inactive_job_ids: set[str] | None = None,
         authentication_required_ids: set[str] | None = None,
@@ -256,7 +414,27 @@ class ApplicationPipelineService:
     ) -> ApplicationPipelineBatchResult:
         """
         Process multiple discovered jobs.
+
+        `job_ids` maps each external job ID to its persisted database
+        UUID.
+
+        Example:
+
+            {
+                "linkedin-123": UUID("..."),
+                "linkedin-456": UUID("...")
+            }
         """
+
+        if jobs is None:
+            raise ValueError(
+                "jobs is required."
+            )
+
+        if profile is None:
+            raise ValueError(
+                "candidate profile is required."
+            )
 
         already_applied_ids = (
             already_applied_ids or set()
@@ -274,15 +452,26 @@ class ApplicationPipelineService:
             captcha_detected_ids or set()
         )
 
+        job_ids = job_ids or {}
+
         results: list[
             ApplicationPipelineResult
         ] = []
 
         for job in jobs:
+
             results.append(
                 self.process_job(
                     job,
                     profile,
+                    user_id=user_id,
+                    job_id=job_ids.get(
+                        job.external_id
+                    ),
+                    resume_id=resume_id,
+                    resume_version_id=(
+                        resume_version_id
+                    ),
                     already_applied=(
                         job.external_id
                         in already_applied_ids
@@ -304,6 +493,10 @@ class ApplicationPipelineService:
                 )
             )
 
+        # --------------------------------------------------------------
+        # Batch statistics
+        # --------------------------------------------------------------
+
         jobs_matched = sum(
             1
             for result in results
@@ -315,6 +508,12 @@ class ApplicationPipelineService:
             1
             for result in results
             if result.queued
+        )
+
+        jobs_persisted = sum(
+            1
+            for result in results
+            if result.persisted
         )
 
         jobs_manual_review = sum(
@@ -341,7 +540,23 @@ class ApplicationPipelineService:
             jobs_evaluated=len(results),
             jobs_matched=jobs_matched,
             jobs_queued=jobs_queued,
+            jobs_persisted=jobs_persisted,
             jobs_skipped=jobs_skipped,
             jobs_manual_review=jobs_manual_review,
-            metadata=dict(metadata or {}),
+            metadata={
+                **dict(metadata or {}),
+                "jobs_evaluated": len(results),
+                "jobs_matched": jobs_matched,
+                "jobs_queued": jobs_queued,
+                "jobs_persisted": jobs_persisted,
+                "jobs_skipped": jobs_skipped,
+                "jobs_manual_review": jobs_manual_review,
+            },
         )
+
+
+__all__ = [
+    "ApplicationPipelineResult",
+    "ApplicationPipelineBatchResult",
+    "ApplicationPipelineService",
+]

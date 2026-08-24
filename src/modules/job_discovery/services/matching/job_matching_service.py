@@ -5,21 +5,32 @@ This service compares discovered jobs against a candidate profile.
 
 Responsibilities:
     - Normalize job and candidate text.
-    - Match role/title variations.
+    - Recognize Data Analyst and Business Analyst role families.
+    - Normalize common technical skill aliases.
     - Match skills.
-    - Match locations.
-    - Match remote preferences.
+    - Apply candidate location priorities.
+    - Match accepted work modes.
+    - Evaluate experience requirements.
     - Apply exclusion rules.
     - Calculate transparent weighted scores.
-    - Produce APPLY / SKIP / MANUAL_REVIEW decisions.
+    - Produce APPLY / SKIP decisions.
 
-The service is portal-independent.
+The matching layer does not handle:
+    - browser automation,
+    - authentication,
+    - OTP,
+    - CAPTCHA,
+    - questionnaire completion,
+    - application submission.
+
+Those responsibilities belong to the application execution layer.
 """
 
 from __future__ import annotations
 
 import re
 from difflib import SequenceMatcher
+from typing import Iterable
 
 from src.modules.job_discovery.domain.entities.job_discovery import (
     DiscoveredJob,
@@ -37,7 +48,17 @@ class JobMatchingService:
     """
     Match discovered jobs against a candidate profile.
 
-    All scoring is transparent and stored in JobMatchBreakdown.
+    Scoring is transparent and is stored in JobMatchBreakdown.
+
+    Default scoring:
+        title       = 35%
+        skills      = 30%
+        location    = 15%
+        work mode   = 10%
+        experience  = 10%
+
+    The candidate profile controls the minimum score required
+    for an APPLY decision.
     """
 
     TITLE_WEIGHT = 0.35
@@ -46,29 +67,306 @@ class JobMatchingService:
     REMOTE_WEIGHT = 0.10
     EXPERIENCE_WEIGHT = 0.10
 
-    MANUAL_REVIEW_MARGIN = 0.10
+    # ------------------------------------------------------------------
+    # Role taxonomy
+    # ------------------------------------------------------------------
 
-    # Canonical role -> accepted role variations.
+    DATA_ANALYST_ROLES: tuple[str, ...] = (
+        "data analyst",
+        "data analytics analyst",
+        "data specialist",
+        "business data analyst",
+        "junior data analyst",
+        "associate data analyst",
+        "reporting analyst",
+        "bi analyst",
+        "business intelligence analyst",
+        "analytics analyst",
+        "analytics specialist",
+        "data quality analyst",
+        "data insights analyst",
+        "data visualization analyst",
+        "data management analyst",
+        "data reporting analyst",
+        "data integration analyst",
+        "data governance analyst",
+        "data operations analyst",
+    )
+
+    BUSINESS_ANALYST_ROLES: tuple[str, ...] = (
+        "business analyst",
+        "associate business analyst",
+        "junior business analyst",
+        "technical business analyst",
+        "it business analyst",
+        "business systems analyst",
+        "business intelligence analyst",
+        "product analyst",
+        "operations analyst",
+        "process analyst",
+        "systems analyst",
+    )
+
+    # A role can be related to either family.
+    # The lower number means higher candidate preference.
+    ROLE_FAMILY_PRIORITY: dict[str, int] = {
+        "data analyst": 1,
+        "business analyst": 2,
+    }
+
+    # ------------------------------------------------------------------
+    # Role aliases
+    # ------------------------------------------------------------------
+
     _ROLE_ALIASES: dict[str, tuple[str, ...]] = {
-        "data analyst": (
-            "data analyst",
-            "business data analyst",
-            "associate data analyst",
-            "data reporting analyst",
-            "data & reporting analyst",
-            "data analytics analyst",
-            "analytics analyst",
-            "reporting analyst",
-            "bi analyst",
+        "data analyst": DATA_ANALYST_ROLES,
+        "business analyst": BUSINESS_ANALYST_ROLES,
+    }
+
+    # ------------------------------------------------------------------
+    # Skill aliases
+    #
+    # Keys are canonical skills.
+    # Values contain common variations found in job descriptions.
+    # ------------------------------------------------------------------
+
+    _SKILL_ALIASES: dict[str, tuple[str, ...]] = {
+        "sql": (
+            "sql",
+            "structured query language",
+            "sql querying",
+            "sql queries",
+            "data querying",
+            "querying",
         ),
-        "business analyst": (
-            "business analyst",
-            "associate business analyst",
-            "business systems analyst",
-            "business data analyst",
-            "business intelligence analyst",
-            "process analyst",
+        "mysql": (
+            "mysql",
+            "mysql database",
+            "mysql workbench",
         ),
+        "python": (
+            "python",
+            "python programming",
+            "python scripting",
+        ),
+        "power bi": (
+            "power bi",
+            "powerbi",
+            "microsoft power bi",
+            "power bi desktop",
+        ),
+        "tableau": (
+            "tableau",
+            "tableau desktop",
+            "tableau reporting",
+        ),
+        "excel": (
+            "excel",
+            "microsoft excel",
+            "ms excel",
+            "advanced excel",
+        ),
+        "jupyter": (
+            "jupyter",
+            "jupyter notebook",
+            "jupyter notebooks",
+        ),
+        "anaconda": (
+            "anaconda",
+            "anaconda distribution",
+        ),
+        "stored procedures": (
+            "stored procedure",
+            "stored procedures",
+            "sql stored procedures",
+        ),
+        "github": (
+            "github",
+            "git hub",
+        ),
+        "gitlab": (
+            "gitlab",
+            "git lab",
+        ),
+        "powershell": (
+            "powershell",
+            "power shell",
+        ),
+        "data visualization": (
+            "data visualization",
+            "data visualisation",
+            "visualization",
+            "visualisation",
+        ),
+        "data cleaning": (
+            "data cleaning",
+            "data cleansing",
+            "data quality cleaning",
+        ),
+        "data preparation": (
+            "data preparation",
+            "data preprocessing",
+            "data pre-processing",
+            "data preparation and cleaning",
+        ),
+        "data wrangling": (
+            "data wrangling",
+            "data munging",
+            "data transformation",
+        ),
+        "etl": (
+            "etl",
+            "extract transform load",
+            "extract transform and load",
+        ),
+        "statistical analysis": (
+            "statistical analysis",
+            "statistics",
+            "statistical modeling",
+            "statistical modelling",
+        ),
+        "data interpretation": (
+            "data interpretation",
+            "interpreting data",
+            "data insights",
+        ),
+        "dbms": (
+            "dbms",
+            "database management systems",
+            "database management system",
+        ),
+        "jira": (
+            "jira",
+            "atlassian jira",
+        ),
+        "data querying and manipulation": (
+            "data querying",
+            "data manipulation",
+            "querying and manipulation",
+            "data query and manipulation",
+        ),
+        "dashboard creation": (
+            "dashboard",
+            "dashboards",
+            "dashboard creation",
+            "dashboard development",
+            "reporting dashboards",
+        ),
+        "reporting": (
+            "reporting",
+            "reports",
+            "report generation",
+            "management reporting",
+        ),
+        "data storytelling": (
+            "data storytelling",
+            "data story",
+            "storytelling with data",
+        ),
+        "business acumen": (
+            "business acumen",
+            "business understanding",
+            "business knowledge",
+        ),
+        "data management": (
+            "data management",
+            "data governance",
+            "data operations",
+        ),
+        "data extraction": (
+            "data extraction",
+            "extracting data",
+            "data retrieval",
+        ),
+        "genai": (
+            "genai",
+            "generative ai",
+            "generative artificial intelligence",
+        ),
+        "prompt engineering": (
+            "prompt engineering",
+            "prompt design",
+            "prompting",
+        ),
+        "nlp": (
+            "nlp",
+            "natural language processing",
+        ),
+        "ai concepts": (
+            "artificial intelligence",
+            "ai concepts",
+            "ai",
+            "machine intelligence",
+        ),
+        "problem solving": (
+            "problem solving",
+            "problem-solving",
+            "analytical problem solving",
+        ),
+        "critical thinking": (
+            "critical thinking",
+            "analytical thinking",
+        ),
+        "teamwork": (
+            "teamwork",
+            "team collaboration",
+            "collaboration",
+        ),
+        "attention to detail": (
+            "attention to detail",
+            "detail oriented",
+            "detail-oriented",
+        ),
+    }
+
+    # ------------------------------------------------------------------
+    # Location aliases and preference
+    # ------------------------------------------------------------------
+
+    _LOCATION_ALIASES: dict[str, tuple[str, ...]] = {
+        "hyderabad": (
+            "hyderabad",
+            "secunderabad",
+        ),
+        "bengaluru": (
+            "bengaluru",
+            "bangalore",
+            "bengalooru",
+        ),
+        "pune": (
+            "pune",
+        ),
+        "mumbai": (
+            "mumbai",
+            "bombay",
+        ),
+        "chennai": (
+            "chennai",
+            "madras",
+        ),
+        "noida": (
+            "noida",
+        ),
+        "gurugram": (
+            "gurugram",
+            "gurgaon",
+        ),
+    }
+
+    _LOCATION_PRIORITY: dict[str, float] = {
+        "hyderabad": 1.00,
+        "bengaluru": 0.90,
+        "pune": 0.80,
+        "mumbai": 0.80,
+        "chennai": 0.80,
+        "noida": 0.80,
+        "gurugram": 0.80,
+    }
+
+    _REMOTE_VALUES = {
+        "remote",
+        "hybrid",
+        "onsite",
     }
 
     _STOP_WORDS = {
@@ -82,7 +380,13 @@ class JobMatchingService:
         "in",
         "at",
         "to",
+        "with",
+        "on",
     }
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def match(
         self,
@@ -90,7 +394,7 @@ class JobMatchingService:
         profile: CandidateJobProfile,
     ) -> JobMatchResult:
         """
-        Match one job against the candidate profile.
+        Match one job against a candidate profile.
         """
 
         if job is None:
@@ -137,6 +441,10 @@ class JobMatchingService:
             profile,
         )
 
+        role_priority = self._get_role_priority(
+            job.title
+        )
+
         breakdown = JobMatchBreakdown(
             title_score=title_score,
             skill_score=skill_score,
@@ -155,6 +463,19 @@ class JobMatchingService:
             excluded_reasons=tuple(
                 excluded_reasons
             ),
+            metadata={
+                "role_priority": role_priority,
+                "role_family": self._get_role_family(
+                    job.title
+                ),
+                "location_priority": self._get_location_priority(
+                    job.location
+                ),
+                "job_location": job.location,
+                "work_mode": self._get_work_mode(
+                    job
+                ),
+            },
         )
 
         overall_score = self._calculate_overall_score(
@@ -173,6 +494,19 @@ class JobMatchingService:
             decision=decision,
             breakdown=breakdown,
             reason=reason,
+            metadata={
+                "match_threshold": profile.minimum_match_score,
+                "role_family": self._get_role_family(
+                    job.title
+                ),
+                "role_priority": role_priority,
+                "location_priority": self._get_location_priority(
+                    job.location
+                ),
+                "automatic_application_eligible": (
+                    decision == DecisionType.APPLY.value
+                ),
+            },
         )
 
     def match_many(
@@ -191,7 +525,10 @@ class JobMatchingService:
             )
 
         return tuple(
-            self.match(job, profile)
+            self.match(
+                job,
+                profile,
+            )
             for job in jobs
         )
 
@@ -207,8 +544,8 @@ class JobMatchingService:
         """
         Determine the strongest target-role match.
 
-        Exact/alias matches take priority over fuzzy matches.
-        Only the strongest role is returned.
+        Exact family aliases receive the strongest score.
+        Fuzzy matching is used only as a secondary signal.
         """
 
         normalized_title = self._normalize_text(
@@ -218,7 +555,9 @@ class JobMatchingService:
         if not normalized_title:
             return 0.0, []
 
-        role_scores: list[tuple[str, float, bool]] = []
+        role_scores: list[
+            tuple[str, float, bool, int]
+        ] = []
 
         for target_role in target_roles:
             normalized_role = self._normalize_text(
@@ -233,6 +572,17 @@ class JobMatchingService:
                 (normalized_role,),
             )
 
+            family = self._get_role_family(
+                normalized_role
+            )
+
+            family_priority = (
+                self.ROLE_FAMILY_PRIORITY.get(
+                    family,
+                    99,
+                )
+            )
+
             best_score = 0.0
             exact_match = False
 
@@ -244,7 +594,10 @@ class JobMatchingService:
                 if not normalized_alias:
                     continue
 
-                if normalized_alias in normalized_title:
+                if self._role_phrase_matches(
+                    normalized_title,
+                    normalized_alias,
+                ):
                     best_score = 1.0
                     exact_match = True
                     break
@@ -265,13 +618,13 @@ class JobMatchingService:
                     target_role,
                     best_score,
                     exact_match,
+                    family_priority,
                 )
             )
 
         if not role_scores:
             return 0.0, []
 
-        # Exact alias match always wins.
         exact_matches = [
             item
             for item in role_scores
@@ -279,23 +632,34 @@ class JobMatchingService:
         ]
 
         if exact_matches:
-            best = max(
+            best = min(
                 exact_matches,
-                key=lambda item: item[1],
+                key=lambda item: (
+                    item[3],
+                    -item[1],
+                ),
             )
 
-            return round(best[1], 4), [best[0]]
+            return (
+                round(best[1], 4),
+                [best[0]],
+            )
 
-        # Otherwise select only the strongest fuzzy match.
         best = max(
             role_scores,
-            key=lambda item: item[1],
+            key=lambda item: (
+                item[1],
+                -item[3],
+            ),
         )
 
         if best[1] < 0.65:
             return round(best[1], 4), []
 
-        return round(best[1], 4), [best[0]]
+        return (
+            round(best[1], 4),
+            [best[0]],
+        )
 
     # ------------------------------------------------------------------
     # SKILL MATCHING
@@ -310,13 +674,15 @@ class JobMatchingService:
         list[str],
         list[str],
     ]:
-        job_text = self._build_job_text(job)
+        job_text = self._build_job_text(
+            job
+        )
 
-        required = self._unique_normalized(
+        required = self._canonicalize_skills(
             profile.required_skills
         )
 
-        preferred = self._unique_normalized(
+        preferred = self._canonicalize_skills(
             profile.preferred_skills
         )
 
@@ -328,14 +694,18 @@ class JobMatchingService:
                 job_text,
                 skill,
             ):
-                matched_required.append(skill)
+                matched_required.append(
+                    skill
+                )
 
         for skill in preferred:
             if self._contains_skill(
                 job_text,
                 skill,
             ):
-                matched_preferred.append(skill)
+                matched_preferred.append(
+                    skill
+                )
 
         total_relevant = (
             len(required)
@@ -350,7 +720,10 @@ class JobMatchingService:
             + len(matched_preferred)
         )
 
-        score = matched_total / total_relevant
+        score = (
+            matched_total
+            / total_relevant
+        )
 
         missing_required = [
             skill
@@ -360,8 +733,10 @@ class JobMatchingService:
 
         return (
             round(score, 4),
-            matched_required
-            + matched_preferred,
+            (
+                matched_required
+                + matched_preferred
+            ),
             missing_required,
         )
 
@@ -374,6 +749,17 @@ class JobMatchingService:
         job: DiscoveredJob,
         profile: CandidateJobProfile,
     ) -> float:
+        """
+        Score location according to candidate preference.
+
+        Hyderabad receives the highest preference.
+        Other configured preferred cities receive their configured
+        preference score.
+
+        Remote jobs remain acceptable and are handled by work-mode
+        scoring as well.
+        """
+
         if not profile.preferred_locations:
             return 0.5
 
@@ -382,24 +768,54 @@ class JobMatchingService:
         )
 
         if not job_location:
-            return 0.0
+            return 0.5
 
-        for location in profile.preferred_locations:
-            normalized_location = (
-                self._normalize_text(location)
+        best_score = 0.0
+
+        for preferred in profile.preferred_locations:
+            canonical = self._canonicalize_location(
+                preferred
             )
 
-            if (
-                normalized_location
-                and normalized_location
-                in job_location
-            ):
-                return 1.0
+            if canonical is None:
+                continue
 
-        return 0.0
+            aliases = self._LOCATION_ALIASES.get(
+                canonical,
+                (canonical,),
+            )
+
+            if any(
+                alias in job_location
+                for alias in aliases
+            ):
+                best_score = max(
+                    best_score,
+                    self._LOCATION_PRIORITY.get(
+                        canonical,
+                        0.70,
+                    ),
+                )
+
+        if "remote" in job_location:
+            best_score = max(
+                best_score,
+                0.85,
+            )
+
+        if "anywhere" in job_location:
+            best_score = max(
+                best_score,
+                0.85,
+            )
+
+        return round(
+            best_score,
+            4,
+        )
 
     # ------------------------------------------------------------------
-    # REMOTE
+    # REMOTE / WORK MODE
     # ------------------------------------------------------------------
 
     def _score_remote(
@@ -407,24 +823,22 @@ class JobMatchingService:
         job: DiscoveredJob,
         profile: CandidateJobProfile,
     ) -> float:
+        """
+        Work-mode compatibility.
+
+        Remote, hybrid and onsite are all acceptable when configured
+        by the candidate.
+        """
+
         if not profile.preferred_remote_statuses:
             return 0.5
 
-        if job.remote_status is not None:
-            job_remote = job.remote_status.value
-        else:
-            location = self._normalize_text(
-                job.location or ""
-            )
+        job_remote = self._get_work_mode(
+            job
+        )
 
-            if "remote" in location:
-                job_remote = "remote"
-            elif "hybrid" in location:
-                job_remote = "hybrid"
-            elif "onsite" in location:
-                job_remote = "onsite"
-            else:
-                return 0.5
+        if not job_remote:
+            return 0.5
 
         preferred = {
             self._normalize_text(status)
@@ -433,11 +847,18 @@ class JobMatchingService:
             )
         }
 
-        return (
-            1.0
-            if job_remote in preferred
-            else 0.0
-        )
+        if job_remote in preferred:
+            return 1.0
+
+        # Candidate has explicitly stated that all common work modes
+        # are acceptable. Keep the job eligible rather than penalizing
+        # it to zero.
+        if self._all_work_modes_accepted(
+            preferred
+        ):
+            return 1.0
+
+        return 0.0
 
     # ------------------------------------------------------------------
     # EXPERIENCE
@@ -577,7 +998,13 @@ class JobMatchingService:
         )
 
         return round(
-            max(0.0, min(1.0, score)),
+            max(
+                0.0,
+                min(
+                    1.0,
+                    score,
+                ),
+            ),
             4,
         )
 
@@ -593,14 +1020,12 @@ class JobMatchingService:
         breakdown: JobMatchBreakdown,
     ) -> tuple[str, str]:
         """
-        Produce the final matching decision.
+        Produce APPLY / SKIP.
 
-        Exclusions always win.
+        Matching itself does not create MANUAL_REVIEW decisions.
 
-        Missing required skills cause MANUAL_REVIEW when the
-        overall job match is otherwise reasonably strong. This
-        prevents potentially valuable jobs from being silently
-        discarded because a portal exposed incomplete data.
+        Authentication, OTP, CAPTCHA and other execution blockers
+        are handled by the application execution layer.
         """
 
         if breakdown.excluded_reasons:
@@ -612,24 +1037,6 @@ class JobMatchingService:
             )
 
         if (
-            breakdown.missing_required_skills
-            and overall_score
-            >= profile.minimum_match_score
-            - self.MANUAL_REVIEW_MARGIN
-        ):
-            return (
-                DecisionType.MANUAL_REVIEW.value,
-                (
-                    "Strong or borderline match, "
-                    "but required skills were not "
-                    "confirmed: "
-                    + ", ".join(
-                        breakdown.missing_required_skills
-                    )
-                ),
-            )
-
-        if (
             overall_score
             >= profile.minimum_match_score
         ):
@@ -637,24 +1044,25 @@ class JobMatchingService:
                 DecisionType.APPLY.value,
                 (
                     f"Match score "
-                    f"{overall_score:.0%} meets the "
-                    f"minimum threshold of "
+                    f"{overall_score:.0%} meets or "
+                    f"exceeds the minimum threshold "
+                    f"of "
                     f"{profile.minimum_match_score:.0%}."
                 ),
             )
 
-        if (
-            overall_score
-            >= profile.minimum_match_score
-            - self.MANUAL_REVIEW_MARGIN
-        ):
+        if breakdown.missing_required_skills:
             return (
-                DecisionType.MANUAL_REVIEW.value,
+                DecisionType.SKIP.value,
                 (
                     f"Match score "
-                    f"{overall_score:.0%} is close to "
-                    f"the minimum threshold of "
-                    f"{profile.minimum_match_score:.0%}."
+                    f"{overall_score:.0%} is below the "
+                    f"minimum threshold of "
+                    f"{profile.minimum_match_score:.0%}; "
+                    f"required skills not confirmed: "
+                    + ", ".join(
+                        breakdown.missing_required_skills
+                    )
                 ),
             )
 
@@ -669,6 +1077,198 @@ class JobMatchingService:
         )
 
     # ------------------------------------------------------------------
+    # ROLE HELPERS
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _get_role_family(
+        cls,
+        value: str,
+    ) -> str | None:
+        normalized = cls._normalize_text(
+            value
+        )
+
+        for family, aliases in (
+            cls._ROLE_ALIASES.items()
+        ):
+            for alias in aliases:
+                normalized_alias = (
+                    cls._normalize_text(alias)
+                )
+
+                if cls._role_phrase_matches(
+                    normalized,
+                    normalized_alias,
+                ):
+                    return family
+
+        return None
+
+    @classmethod
+    def _get_role_priority(
+        cls,
+        title: str,
+    ) -> int | None:
+        family = cls._get_role_family(
+            title
+        )
+
+        if family is None:
+            return None
+
+        return cls.ROLE_FAMILY_PRIORITY.get(
+            family
+        )
+
+    @classmethod
+    def _role_phrase_matches(
+        cls,
+        text: str,
+        phrase: str,
+    ) -> bool:
+        if not text or not phrase:
+            return False
+
+        if phrase in text:
+            return True
+
+        pattern = (
+            r"(?<![a-z0-9])"
+            + re.escape(phrase)
+            + r"(?![a-z0-9])"
+        )
+
+        return re.search(
+            pattern,
+            text,
+        ) is not None
+
+    # ------------------------------------------------------------------
+    # LOCATION HELPERS
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _canonicalize_location(
+        cls,
+        value: str,
+    ) -> str | None:
+        normalized = cls._normalize_text(
+            value
+        )
+
+        if not normalized:
+            return None
+
+        for canonical, aliases in (
+            cls._LOCATION_ALIASES.items()
+        ):
+            if any(
+                alias in normalized
+                for alias in aliases
+            ):
+                return canonical
+
+        return normalized
+
+    @classmethod
+    def _get_location_priority(
+        cls,
+        location: str | None,
+    ) -> float:
+        if not location:
+            return 0.5
+
+        normalized = cls._normalize_text(
+            location
+        )
+
+        if "remote" in normalized:
+            return 0.85
+
+        best = 0.0
+
+        for canonical, aliases in (
+            cls._LOCATION_ALIASES.items()
+        ):
+            if any(
+                alias in normalized
+                for alias in aliases
+            ):
+                best = max(
+                    best,
+                    cls._LOCATION_PRIORITY.get(
+                        canonical,
+                        0.70,
+                    ),
+                )
+
+        return (
+            round(best, 4)
+            if best
+            else 0.5
+        )
+
+    # ------------------------------------------------------------------
+    # WORK-MODE HELPERS
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _get_work_mode(
+        cls,
+        job: DiscoveredJob,
+    ) -> str | None:
+        if job.remote_status is not None:
+            return cls._normalize_text(
+                job.remote_status.value
+            )
+
+        location = cls._normalize_text(
+            job.location or ""
+        )
+
+        description = cls._normalize_text(
+            job.description or ""
+        )
+
+        combined = (
+            f"{location} {description}"
+        )
+
+        if "hybrid" in combined:
+            return "hybrid"
+
+        if "remote" in combined:
+            return "remote"
+
+        if "on site" in combined:
+            return "onsite"
+
+        if "onsite" in combined:
+            return "onsite"
+
+        return None
+
+    @classmethod
+    def _all_work_modes_accepted(
+        cls,
+        preferred: set[str],
+    ) -> bool:
+        normalized = {
+            value.replace(
+                " ",
+                "_",
+            )
+            for value in preferred
+        }
+
+        return {
+            "remote",
+            "hybrid",
+            "onsite",
+        }.issubset(normalized)
+
+    # ------------------------------------------------------------------
     # TEXT HELPERS
     # ------------------------------------------------------------------
 
@@ -677,15 +1277,24 @@ class JobMatchingService:
         cls,
         value: str,
     ) -> str:
-        value = value.lower().strip()
+        value = (
+            value
+            .lower()
+            .strip()
+        )
 
         value = value.replace(
             "&",
             " and ",
         )
 
+        value = value.replace(
+            "/",
+            " ",
+        )
+
         value = re.sub(
-            r"[^a-z0-9+#.\s]",
+            r"[^a-z0-9+#.\s-]",
             " ",
             value,
         )
@@ -703,17 +1312,81 @@ class JobMatchingService:
         cls,
         job: DiscoveredJob,
     ) -> str:
+        metadata_text = ""
+
+        if job.metadata:
+            metadata_text = " ".join(
+                str(value)
+                for value in job.metadata.values()
+                if value is not None
+            )
+
         return cls._normalize_text(
             " ".join(
                 value
                 for value in (
                     job.title,
                     job.company_name,
+                    job.location or "",
                     job.description or "",
+                    metadata_text,
                 )
                 if value
             )
         )
+
+    # ------------------------------------------------------------------
+    # SKILL HELPERS
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _canonicalize_skill(
+        cls,
+        skill: str,
+    ) -> str:
+        normalized = cls._normalize_text(
+            skill
+        )
+
+        if not normalized:
+            return ""
+
+        for canonical, aliases in (
+            cls._SKILL_ALIASES.items()
+        ):
+            normalized_aliases = {
+                cls._normalize_text(alias)
+                for alias in aliases
+            }
+
+            if (
+                normalized in normalized_aliases
+            ):
+                return canonical
+
+        return normalized
+
+    @classmethod
+    def _canonicalize_skills(
+        cls,
+        values: Iterable[str],
+    ) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+
+        for value in values:
+            canonical = cls._canonicalize_skill(
+                value
+            )
+
+            if (
+                canonical
+                and canonical not in seen
+            ):
+                seen.add(canonical)
+                result.append(canonical)
+
+        return result
 
     @classmethod
     def _contains_skill(
@@ -721,19 +1394,35 @@ class JobMatchingService:
         job_text: str,
         skill: str,
     ) -> bool:
-        normalized_skill = (
-            cls._normalize_text(skill)
+        canonical = cls._canonicalize_skill(
+            skill
         )
 
-        if not normalized_skill:
+        if not canonical:
             return False
 
-        if normalized_skill in job_text:
-            return True
+        aliases = cls._SKILL_ALIASES.get(
+            canonical,
+            (canonical,),
+        )
+
+        for alias in aliases:
+            normalized_alias = (
+                cls._normalize_text(alias)
+            )
+
+            if not normalized_alias:
+                continue
+
+            if cls._role_phrase_matches(
+                job_text,
+                normalized_alias,
+            ):
+                return True
 
         tokens = [
             token
-            for token in normalized_skill.split()
+            for token in canonical.split()
             if token not in cls._STOP_WORDS
         ]
 
@@ -750,22 +1439,13 @@ class JobMatchingService:
         cls,
         values: tuple[str, ...],
     ) -> list[str]:
-        result: list[str] = []
-        seen: set[str] = set()
+        return cls._canonicalize_skills(
+            values
+        )
 
-        for value in values:
-            normalized = cls._normalize_text(
-                value
-            )
-
-            if (
-                normalized
-                and normalized not in seen
-            ):
-                seen.add(normalized)
-                result.append(normalized)
-
-        return result
+    # ------------------------------------------------------------------
+    # EXPERIENCE HELPERS
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _extract_year_requirement(
@@ -774,6 +1454,7 @@ class JobMatchingService:
         patterns = (
             r"(\d+(?:\.\d+)?)\s*\+?\s*years",
             r"(\d+(?:\.\d+)?)\s*\+?\s*yrs",
+            r"minimum\s+of\s+(\d+(?:\.\d+)?)",
         )
 
         for pattern in patterns:

@@ -36,7 +36,7 @@ class CandidateJobProfile:
     minimum_experience_years: float | None = None
     maximum_experience_years: float | None = None
 
-    minimum_match_score: float = 0.70
+    minimum_match_score: float = 0.50
 
     metadata: dict[str, Any] = field(
         default_factory=dict

@@ -35,7 +35,10 @@ class SQLAlchemyJobRepository(JobRepository):
     # Create
     # ------------------------------------------------------------------
 
-    def create(self, job: DiscoveredJob) -> DiscoveredJob:
+    def create(
+        self,
+        job: DiscoveredJob,
+    ) -> DiscoveredJob:
         """Persist a newly discovered job."""
 
         existing = self.get_by_external_id(
@@ -59,10 +62,16 @@ class SQLAlchemyJobRepository(JobRepository):
     # Get by internal ID
     # ------------------------------------------------------------------
 
-    def get_by_id(self, job_id: UUID) -> DiscoveredJob | None:
+    def get_by_id(
+        self,
+        job_id: UUID,
+    ) -> DiscoveredJob | None:
         """Retrieve a job by internal UUID."""
 
-        model = self._session.get(JobModel, job_id)
+        model = self._session.get(
+            JobModel,
+            job_id,
+        )
 
         if model is None:
             return None
@@ -94,10 +103,43 @@ class SQLAlchemyJobRepository(JobRepository):
         return self._to_domain(model)
 
     # ------------------------------------------------------------------
+    # Get internal ID by external identity
+    # ------------------------------------------------------------------
+
+    def get_internal_id_by_external_id(
+        self,
+        *,
+        source: JobSourceType,
+        external_job_id: str,
+    ) -> UUID | None:
+        """
+        Retrieve the persistent database UUID for a job using its
+        portal source and external job ID.
+
+        This is used when another persistence model, such as an
+        application, needs to reference the internal jobs.id UUID
+        while the domain layer only knows the external job identity.
+        """
+
+        statement = (
+            select(JobModel.id)
+            .where(
+                JobModel.source == source,
+                JobModel.external_job_id == external_job_id,
+            )
+            .limit(1)
+        )
+
+        return self._session.scalar(statement)
+
+    # ------------------------------------------------------------------
     # Upsert
     # ------------------------------------------------------------------
 
-    def upsert(self, job: DiscoveredJob) -> DiscoveredJob:
+    def upsert(
+        self,
+        job: DiscoveredJob,
+    ) -> DiscoveredJob:
         """
         Create a job if it does not exist.
 
@@ -120,7 +162,10 @@ class SQLAlchemyJobRepository(JobRepository):
 
             return self._to_domain(model)
 
-        self._apply_domain_to_model(model, job)
+        self._apply_domain_to_model(
+            model,
+            job,
+        )
 
         self._session.flush()
 
@@ -137,7 +182,10 @@ class SQLAlchemyJobRepository(JobRepository):
     ) -> DiscoveredJob:
         """Update an existing discovered job."""
 
-        model = self._session.get(JobModel, job_id)
+        model = self._session.get(
+            JobModel,
+            job_id,
+        )
 
         if model is None:
             raise ValueError(
@@ -155,7 +203,10 @@ class SQLAlchemyJobRepository(JobRepository):
                 "External job ID cannot be changed during update."
             )
 
-        self._apply_domain_to_model(model, job)
+        self._apply_domain_to_model(
+            model,
+            job,
+        )
 
         self._session.flush()
 
@@ -174,11 +225,15 @@ class SQLAlchemyJobRepository(JobRepository):
         """Return active jobs newest first."""
 
         if limit < 1:
-            raise ValueError("limit must be greater than zero.")
+            raise ValueError(
+                "limit must be greater than zero."
+            )
 
         statement = (
             select(JobModel)
-            .where(JobModel.is_active.is_(True))
+            .where(
+                JobModel.is_active.is_(True)
+            )
             .order_by(
                 JobModel.posted_at.desc().nullslast(),
                 JobModel.created_at.desc(),
@@ -191,7 +246,9 @@ class SQLAlchemyJobRepository(JobRepository):
                 JobModel.source == source
             )
 
-        models = self._session.scalars(statement).all()
+        models = self._session.scalars(
+            statement
+        ).all()
 
         return [
             self._to_domain(model)
@@ -202,10 +259,16 @@ class SQLAlchemyJobRepository(JobRepository):
     # Deactivate
     # ------------------------------------------------------------------
 
-    def deactivate(self, job_id: UUID) -> None:
+    def deactivate(
+        self,
+        job_id: UUID,
+    ) -> None:
         """Mark a job inactive."""
 
-        model = self._session.get(JobModel, job_id)
+        model = self._session.get(
+            JobModel,
+            job_id,
+        )
 
         if model is None:
             raise ValueError(
@@ -247,7 +310,9 @@ class SQLAlchemyJobRepository(JobRepository):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _to_model(job: DiscoveredJob) -> JobModel:
+    def _to_model(
+        job: DiscoveredJob,
+    ) -> JobModel:
         """Convert a domain job into an ORM model."""
 
         return JobModel(
@@ -257,8 +322,10 @@ class SQLAlchemyJobRepository(JobRepository):
             company_name=job.company_name,
             url=job.url,
             location=job.location,
-            remote=SQLAlchemyJobRepository._remote_status_to_bool(
-                job.remote_status
+            remote=(
+                SQLAlchemyJobRepository._remote_status_to_bool(
+                    job.remote_status
+                )
             ),
             employment_type=(
                 job.employment_type.value
@@ -266,8 +333,10 @@ class SQLAlchemyJobRepository(JobRepository):
                 else None
             ),
             description=job.description,
-            posted_at=SQLAlchemyJobRepository._posted_at_to_datetime(
-                job.posted_at
+            posted_at=(
+                SQLAlchemyJobRepository._posted_at_to_datetime(
+                    job.posted_at
+                )
             ),
             salary_min=job.salary_min,
             salary_max=job.salary_max,
@@ -312,7 +381,9 @@ class SQLAlchemyJobRepository(JobRepository):
         model.salary_max = job.salary_max
         model.salary_currency = job.salary_currency
 
-        model.metadata_json = dict(job.metadata)
+        model.metadata_json = dict(
+            job.metadata
+        )
 
         model.is_active = True
 
@@ -327,7 +398,10 @@ class SQLAlchemyJobRepository(JobRepository):
 
         try:
             return datetime.fromisoformat(
-                value.replace("Z", "+00:00")
+                value.replace(
+                    "Z",
+                    "+00:00",
+                )
             )
         except ValueError as exc:
             raise ValueError(
@@ -342,6 +416,7 @@ class SQLAlchemyJobRepository(JobRepository):
         Convert RemoteStatus into the database boolean.
 
         The database intentionally stores the normalized value as:
+
             True  = remote
             False = non-remote
             None  = unknown
@@ -359,7 +434,9 @@ class SQLAlchemyJobRepository(JobRepository):
             remote_status,
         )
 
-        normalized = str(value).strip().lower()
+        normalized = str(
+            value
+        ).strip().lower()
 
         if normalized in {
             "remote",
@@ -384,7 +461,9 @@ class SQLAlchemyJobRepository(JobRepository):
         )
 
     @staticmethod
-    def _to_domain(model: JobModel) -> DiscoveredJob:
+    def _to_domain(
+        model: JobModel,
+    ) -> DiscoveredJob:
         """Convert ORM model into the domain entity."""
 
         from src.shared.config.constants import (
@@ -435,7 +514,9 @@ class SQLAlchemyJobRepository(JobRepository):
                 else None
             ),
             salary_currency=model.salary_currency,
-            metadata=dict(model.metadata_json or {}),
+            metadata=dict(
+                model.metadata_json or {}
+            ),
         )
 
     @staticmethod
@@ -449,7 +530,11 @@ class SQLAlchemyJobRepository(JobRepository):
             return None
 
         preferred_names = (
-            ("REMOTE", "FULLY_REMOTE", "REMOTE_ONLY")
+            (
+                "REMOTE",
+                "FULLY_REMOTE",
+                "REMOTE_ONLY",
+            )
             if value
             else (
                 "ONSITE",
@@ -473,7 +558,11 @@ class SQLAlchemyJobRepository(JobRepository):
         # Fallback by enum value.
         for member in remote_status_enum:
             normalized = str(
-                getattr(member, "value", member)
+                getattr(
+                    member,
+                    "value",
+                    member,
+                )
             ).lower()
 
             if value and "remote" in normalized:

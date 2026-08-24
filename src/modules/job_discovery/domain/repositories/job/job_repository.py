@@ -24,12 +24,18 @@ class JobRepository(ABC):
     """
 
     @abstractmethod
-    def create(self, job: DiscoveredJob) -> DiscoveredJob:
+    def create(
+        self,
+        job: DiscoveredJob,
+    ) -> DiscoveredJob:
         """Persist a newly discovered job."""
         raise NotImplementedError
 
     @abstractmethod
-    def get_by_id(self, job_id: UUID) -> DiscoveredJob | None:
+    def get_by_id(
+        self,
+        job_id: UUID,
+    ) -> DiscoveredJob | None:
         """Retrieve a job by internal UUID."""
         raise NotImplementedError
 
@@ -46,14 +52,37 @@ class JobRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def upsert(self, job: DiscoveredJob) -> DiscoveredJob:
+    def get_internal_id_by_external_id(
+        self,
+        *,
+        source: JobSourceType,
+        external_job_id: str,
+    ) -> UUID | None:
+        """
+        Retrieve the persistent database UUID for a job using its
+        portal source and external job ID.
+
+        This is required when another persistence model, such as an
+        application, needs to reference jobs.id.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def upsert(
+        self,
+        job: DiscoveredJob,
+    ) -> DiscoveredJob:
         """
         Create the job if it does not exist, otherwise update it.
         """
         raise NotImplementedError
 
     @abstractmethod
-    def update(self, job_id: UUID, job: DiscoveredJob) -> DiscoveredJob:
+    def update(
+        self,
+        job_id: UUID,
+        job: DiscoveredJob,
+    ) -> DiscoveredJob:
         """Update an existing discovered job."""
         raise NotImplementedError
 
@@ -72,7 +101,10 @@ class JobRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def deactivate(self, job_id: UUID) -> None:
+    def deactivate(
+        self,
+        job_id: UUID,
+    ) -> None:
         """Mark a job as inactive."""
         raise NotImplementedError
 

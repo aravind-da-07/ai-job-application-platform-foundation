@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from src.shared.config.settings import get_settings
 from src.shared.core.exceptions import ConfigurationError, DatabaseError
 from src.shared.logging.logger import get_logger
+from src.shared.database import models as _models
 
 logger = get_logger(__name__)
 

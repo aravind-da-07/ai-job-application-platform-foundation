@@ -15,9 +15,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from src.api.routers import applications
 from src.api.routers import jobs
 from src.api.routers import resumes
 from src.api.routers import system
+from src.api.routers import users
 from src.shared.config.settings import get_settings
 from src.shared.logging.logger import configure_logging, get_logger
 from src.shared.middleware.error_handlers import register_error_handlers
@@ -111,6 +113,11 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(
+        users.router,
+        prefix=settings.api_prefix,
+    )
+
+    app.include_router(
         resumes.router,
         prefix=settings.api_prefix,
     )
@@ -118,6 +125,11 @@ def create_app() -> FastAPI:
     app.include_router(
         jobs.router,
         prefix=settings.api_prefix,
+    )
+
+    app.include_router(
+    applications.router,
+    prefix=settings.api_prefix,
     )
 
     return app
